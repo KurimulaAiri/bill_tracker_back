@@ -1,0 +1,117 @@
+// Prisma schema - 个人账单统计系统
+// 金额统一以「分」为单位的 BIGINT 存储
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           BigInt   @id @default(autoincrement())
+  username     String   @unique @db.VarChar(50)
+  passwordHash String   @db.VarChar(100)
+  email        String?  @unique @db.VarChar(100)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accounts    Account[]
+  categories  Category[]
+  bills       Bill[]
+  importBatches ImportBatch[]
+}
+
+model Account {
+  id        BigInt   @id @default(autoincrement())
+  userId    BigInt
+  name      String   @db.VarChar(50)
+  type      String   @db.VarChar(20) // cash | bank | alipay | wechat | credit | other
+  balance   BigInt   @default(0) // 分
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bills Bill[]
+
+  @@index([userId])
+  @@unique([userId, name])
+}
+
+model Category {
+  id        BigInt   @id @default(autoincrement())
+  userId    BigInt?
+  name      String   @db.VarChar(50)
+  type      String   @db.VarChar(10) // income | expense
+  icon      String?  @db.VarChar(50)
+  sort      Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bills Bill[]
+
+  @@index([userId])
+  @@unique([userId, name, type])
+}
+
+model Bill {
+  id         BigInt   @id @default(autoincrement())
+  userId     BigInt
+  accountId  BigInt?
+  categoryId BigInt?
+  amount     BigInt // 分，收入为正、支出为负
+  billType   String   @db.VarChar(10) // income | expense | neutral
+  note       String?  @db.VarChar(500)
+  // 来源: manual | alipay | wechat | ccb_saving | ccb_credit
+  source     String   @default("manual") @db.VarChar(20)
+  externalId String?  @db.VarChar(100) // 来源交易单号，用于去重
+  rawData    Json?
+  neutral    Boolean  @default(false) // 中性交易/不计收支
+  billDate   DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account  Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // 防重复导入：同一用户同来源同单号唯一
+  @@unique([userId, source, externalId])
+  @@index([userId, billDate])
+  @@index([userId, categoryId])
+  @@index([userId, source])
+}
+
+model ImportBatch {
+  id        BigInt   @id @default(autoincrement())
+  userId    BigInt
+  source    String   @db.VarChar(20) // alipay | wechat | ccb_saving | ccb_credit
+  fileName  String   @db.VarChar(200)
+  total     Int      @default(0)
+  success   Int      @default(0)
+  skipped   Int      @default(0)
+  failed    Int      @default(0)
+  status    String   @default("done") @db.VarChar(20) // done
+  createdAt DateTime @default(now())
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  failures ImportFailure[]
+
+  @@index([userId])
+}
+
+model ImportFailure {
+  id        BigInt  @id @default(autoincrement())
+  batchId   BigInt
+  rowNo     Int
+  reason    String  @db.VarChar(200)
+  raw       Json?
+  createdAt DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+}
