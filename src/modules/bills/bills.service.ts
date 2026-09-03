@@ -82,4 +82,38 @@ export class BillsService {
     await this.prisma.bill.delete({ where: { id } });
     return { success: true };
   }
+
+  /** 批量删除：按 ids 删除（限定当前用户） */
+  async removeMany(userId: bigint, ids: string[]) {
+    const idList = [...new Set(ids)].map((i) => BigInt(i)).filter((i) => !isNaN(Number(i)));
+    if (idList.length === 0) return { success: false, message: '未选择账单' };
+    const result = await this.prisma.bill.deleteMany({
+      where: { userId, id: { in: idList } },
+    });
+    return { success: true, removed: result.count };
+  }
+
+  /** 条件删除：按时间范围/收支类型/来源/分类/账户删除，返回删除条数 */
+  async removeByCondition(
+    userId: bigint,
+    cond: { start?: string; end?: string; billType?: string; source?: string; categoryId?: string; accountId?: string; keyword?: string },
+  ) {
+    const where: any = { userId };
+    if (cond.start || cond.end) {
+      where.billDate = {
+        ...(cond.start ? { gte: new Date(cond.start) } : {}),
+        ...(cond.end ? { lte: new Date(cond.end) } : {}),
+      };
+    }
+    if (cond.billType) where.billType = cond.billType;
+    if (cond.source) where.source = cond.source;
+    if (cond.categoryId) where.categoryId = BigInt(cond.categoryId);
+    if (cond.accountId) where.accountId = BigInt(cond.accountId);
+    if (cond.keyword) where.note = { contains: cond.keyword };
+
+    const count = await this.prisma.bill.count({ where });
+    if (count === 0) return { success: true, removed: 0 };
+    const result = await this.prisma.bill.deleteMany({ where });
+    return { success: true, removed: result.count };
+  }
 }

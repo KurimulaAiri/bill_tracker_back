@@ -32,4 +32,16 @@ export class BillsController {
   remove(@CurrentUser() user: AuthUser, @Param('id', ParseIntPipe) id: number) {
     return this.billsService.remove(user.userId, BigInt(id));
   }
+
+  // 批量删除：body { ids: string[] }
+  @Post('batch-delete')
+  removeMany(@CurrentUser() user: AuthUser, @Body() body: { ids?: string[] }) {
+    return this.billsService.removeMany(user.userId, body?.ids || []);
+  }
+
+  // 条件删除：body { start?, end?, billType?, source?, categoryId?, accountId?, keyword? }
+  @Post('delete-by-condition')
+  removeByCondition(@CurrentUser() user: AuthUser, @Body() body: any) {
+    return this.billsService.removeByCondition(user.userId, body || {});
+  }
 }

@@ -1,5 +1,6 @@
 // Prisma schema - 个人账单统计系统
 // 金额统一以「分」为单位的 BIGINT 存储
+// 所有表使用 bill_ 前缀，字段均带中文注释说明
 
 generator client {
   provider = "prisma-client-js"
@@ -10,27 +11,44 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// 用户表：系统的登录账号，一个用户可以拥有多个账户、分类、账单与导入批次
 model User {
+  /// 用户ID：主键，数据库自增
   id           BigInt   @id @default(autoincrement())
+  /// 用户名：登录账号，全局唯一
   username     String   @unique @db.VarChar(50)
+  /// 密码哈希：bcrypt 加密后的密码，不存明文
   passwordHash String   @db.VarChar(100)
+  /// 邮箱：可选，用于找回密码等场景，全局唯一
   email        String?  @unique @db.VarChar(100)
+  /// 创建时间：注册时间，自动生成
   createdAt    DateTime @default(now())
+  /// 更新时间：最后修改时间，自动维护
   updatedAt    DateTime @updatedAt
 
-  accounts    Account[]
-  categories  Category[]
-  bills       Bill[]
-  importBatches ImportBatch[]
+  accounts       Account[]
+  categories     Category[]
+  bills          Bill[]
+  importBatches  ImportBatch[]
+
+  @@map("bill_user")
 }
 
+/// 账户表：用户的资金账户（支付宝/微信/建行储蓄/建行信用卡等），账单可归属到账户
 model Account {
+  /// 账户ID：主键，数据库自增
   id        BigInt   @id @default(autoincrement())
+  /// 所属用户ID：关联 bill_user.id；级联删除
   userId    BigInt
+  /// 账户名称：如"支付宝"、"建行储蓄卡"，同一用户下不可重名
   name      String   @db.VarChar(50)
-  type      String   @db.VarChar(20) // cash | bank | alipay | wechat | credit | other
-  balance   BigInt   @default(0) // 分
+  /// 账户类型：cash=现金 bank=银行卡 alipay=支付宝 wechat=微信 credit=信用卡 other=其他
+  type      String   @db.VarChar(20)
+  /// 账户余额：以「分」为单位存储，默认 0
+  balance   BigInt   @default(0)
+  /// 创建时间：自动生成
   createdAt DateTime @default(now())
+  /// 更新时间：自动维护
   updatedAt DateTime @updatedAt
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -38,16 +56,26 @@ model Account {
 
   @@index([userId])
   @@unique([userId, name])
+  @@map("bill_account")
 }
 
+/// 分类表：账单收支分类；userId 为 NULL 表示系统预置分类（所有用户共享）
 model Category {
+  /// 分类ID：主键，数据库自增
   id        BigInt   @id @default(autoincrement())
+  /// 所属用户ID：NULL 为系统预置分类，否则为对应用户的自定义分类
   userId    BigInt?
+  /// 分类名称：如"餐饮美食"、"工资收入"
   name      String   @db.VarChar(50)
-  type      String   @db.VarChar(10) // income | expense
+  /// 分类类型：income=收入分类 expense=支出分类
+  type      String   @db.VarChar(10)
+  /// 图标标识：前端展示用小图标 key
   icon      String?  @db.VarChar(50)
+  /// 排序权重：数值越小越靠前
   sort      Int      @default(0)
+  /// 创建时间：自动生成
   createdAt DateTime @default(now())
+  /// 更新时间：自动维护
   updatedAt DateTime @updatedAt
 
   user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -55,23 +83,52 @@ model Category {
 
   @@index([userId])
   @@unique([userId, name, type])
+  @@map("bill_category")
 }
 
+/// 账单表：核心流水表，手工记账与批量导入的数据统一存储于此
 model Bill {
+  /// 账单ID：主键，数据库自增
   id         BigInt   @id @default(autoincrement())
+  /// 所属用户ID：关联 bill_user.id；级联删除
   userId     BigInt
+  /// 所属账户ID：可为空，关联 bill_account.id；账户删除时置空
   accountId  BigInt?
+  /// 分类ID：可为空，关联 bill_category.id；分类删除时置空
   categoryId BigInt?
-  amount     BigInt // 分，收入为正、支出为负
-  billType   String   @db.VarChar(10) // income | expense | neutral
+  /// 金额（分）：收入为正数、支出为负数，精度到分
+  amount     BigInt
+  /// 收支类型：income=收入 expense=支出 neutral=中性（不计收支）
+  billType   String   @db.VarChar(10)
+  /// 备注：用户可修改的明细说明，最长 500 字
   note       String?  @db.VarChar(500)
-  // 来源: manual | alipay | wechat | ccb_saving | ccb_credit
+  /// 数据来源：manual=手工记账 alipay=支付宝 wechat=微信 ccb_saving=建行活期 ccb_credit=建行信用卡
   source     String   @default("manual") @db.VarChar(20)
-  externalId String?  @db.VarChar(100) // 来源交易单号，用于去重
+  /// 来源交易单号：用于杜绝重复导入；同一用户同一来源下唯一
+  externalId String?  @db.VarChar(100)
+  /// 交易对方名称：支付宝/微信的"交易对方"、建行活期"对方账号与户名"的户名部分、建行信用卡摘要等
+  counterParty String? @db.VarChar(200)
+  /// 对方账号：支付宝"对方账号"、建行活期"对方账号与户名"的账号部分
+  counterpartyAccount String? @db.VarChar(100)
+  /// 商家/商户单号：支付宝"商家订单号"、微信"商户单号"
+  merchantNo String? @db.VarChar(100)
+  /// 收/付款方式：支付宝"收/付款方式"、微信"支付方式"（如花呗、零钱、银行卡）
+  payMethod String? @db.VarChar(100)
+  /// 卡号/账号：建行信用卡卡号、建行活期卡号/账号（存完整号或后四位）
+  cardNo String? @db.VarChar(50)
+  /// 交易状态：支付宝"交易状态"、微信"当前状态"（如交易成功、已转账）
+  status String? @db.VarChar(50)
+  /// 附加列：源账单表单中未被上述字段覆盖的其他列（键=源列名，值=原始单元格），保证所有列都有记录
+  extraJson Json?
+  /// 原始数据：解析时的源文件原始记录（JSON），便于追溯
   rawData    Json?
-  neutral    Boolean  @default(false) // 中性交易/不计收支
+  /// 是否中性交易：true 表示不计入收支统计
+  neutral    Boolean  @default(false)
+  /// 交易时间：交易实际发生的时间
   billDate   DateTime
+  /// 创建时间：自动生成
   createdAt  DateTime @default(now())
+  /// 更新时间：自动维护
   updatedAt  DateTime @updatedAt
 
   user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -83,35 +140,62 @@ model Bill {
   @@index([userId, billDate])
   @@index([userId, categoryId])
   @@index([userId, source])
+  @@map("bill_bill")
 }
 
+/// 导入批次表：每次账单文件导入产生一个批次，记录整体成功/失败/跳过统计；
+/// 同一次批量导入（多个文件）通过 groupId 关联，前端合并展示
 model ImportBatch {
+  /// 批次ID：主键，数据库自增
   id        BigInt   @id @default(autoincrement())
+  /// 所属用户ID：关联 bill_user.id；级联删除
   userId    BigInt
-  source    String   @db.VarChar(20) // alipay | wechat | ccb_saving | ccb_credit
+  /// 导入来源：alipay=支付宝 wechat=微信 ccb_saving=建行活期 ccb_credit=建行信用卡
+  source    String   @db.VarChar(20)
+  /// 导入文件名：原始上传的文件名
   fileName  String   @db.VarChar(200)
+  /// 批量导入会话ID：同一次批量导入（多文件）共用同一 ID，用于前端合并为一条展示
+  groupId   String?  @db.VarChar(50)
+  /// 文件总笔数：解析出的记录总数
   total     Int      @default(0)
+  /// 成功入库笔数
   success   Int      @default(0)
+  /// 跳过笔数：重复单号等被跳过
   skipped   Int      @default(0)
+  /// 失败笔数：金额无效等原因入库失败
   failed    Int      @default(0)
-  status    String   @default("done") @db.VarChar(20) // done
+  /// 批次状态：done=已完成
+  status    String   @default("done") @db.VarChar(20)
+  /// 创建时间：导入时间，自动生成
   createdAt DateTime @default(now())
 
-  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  failures ImportFailure[]
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  failures  ImportFailure[]
 
   @@index([userId])
+  @@index([userId, groupId])
+  @@map("bill_import_batch")
 }
 
+/// 导入失败/跳过明细表：记录批次中每条失败或跳过记录的行号、原因与原始数据
 model ImportFailure {
+  /// 失败记录ID：主键，数据库自增
   id        BigInt  @id @default(autoincrement())
+  /// 所属批次ID：关联 bill_import_batch.id；批次删除时级联删除
   batchId   BigInt
+  /// 明细类型：fail=失败 skip=跳过（重复单号等）
+  kind      String  @default("fail") @db.VarChar(10)
+  /// 源文件行号：在原始文件中的行号（1 起始）
   rowNo     Int
+  /// 失败原因：如"金额无效"、"交易日期无效"
   reason    String  @db.VarChar(200)
+  /// 原始数据：该行原始内容（JSON），便于人工核对
   raw       Json?
+  /// 创建时间：自动生成
   createdAt DateTime @default(now())
 
   batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   @@index([batchId])
+  @@map("bill_import_failure")
 }

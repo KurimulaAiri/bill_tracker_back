@@ -65,6 +65,7 @@ export class AlipayParser extends BaseParser {
       const amountSign = flow === '支出' ? -1 : 1;
       const amountCents = this.toCents(amountRaw) * BigInt(amountSign);
 
+      // 收/支三值：收入/支出/不计收支（基金买卖等按平台原始口径记为不计收支）
       const { billType, neutral } = this.resolveBillType(flow);
 
       const payMethod = get(cPayMethod);

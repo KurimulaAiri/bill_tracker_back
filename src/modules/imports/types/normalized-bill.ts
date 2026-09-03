@@ -10,6 +10,12 @@ export interface NormalizedBill {
   remark?: string; // 备注
   accountHint?: string; // 账户提示（用于自动关联）
   externalId?: string; // 来源交易单号（去重键）
-  counterParty?: string; // 交易对方
+  counterParty?: string; // 交易对方名称
+  counterpartyAccount?: string; // 对方账号（支付宝"对方账号"、建行"对方账号与户名"账号部分）
+  merchantNo?: string; // 商家/商户单号（支付宝"商家订单号"、微信"商户单号"）
+  payMethod?: string; // 收/付款方式（支付宝"收/付款方式"、微信"支付方式"）
+  cardNo?: string; // 卡号/账号（建行）
+  status?: string; // 交易状态（支付宝"交易状态"、微信"当前状态"）
+  extraJson?: Record<string, unknown>; // 附加列（键=源列名，值=原始单元格）
   rawData?: unknown; // 原始行
 }
