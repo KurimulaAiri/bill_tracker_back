@@ -60,16 +60,23 @@ export class ImportsService {
       fileName: string;
       accountId?: bigint;
       groupId?: string; // 批量导入会话ID：同一次批量导入的多文件共用
-      skips?: { rowNo: number; reason: string }[]; // 解析阶段跳过的明细（重复单号/状态无效等）
+      skips?: { rowNo: number; reason: string; raw?: unknown }[]; // 解析阶段跳过的明细（重复单号/状态无效等），raw 为导致跳过的原始值
       bills: (NormalizedBill & { categoryId?: bigint; note?: string })[];
     },
   ) {
     const { source, fileName, bills, accountId, groupId, skips } = payload;
+    const skipList = Array.isArray(skips) ? skips : [];
 
+    // 跳过/失败计数与明细统一：解析阶段跳过直接计入 skipped 并有明细（kind=skip）
     let success = 0;
-    let skipped = 0;
+    let skipped = skipList.length;
     let failed = 0;
     const failures: { rowNo: number; reason: string; raw?: any }[] = [];
+    const skipDetails: { rowNo: number; reason: string; raw?: any }[] = skipList.map((s) => ({
+      rowNo: s.rowNo,
+      reason: s.reason,
+      raw: s.raw,
+    }));
 
     // 已存在的 externalId 集合（去重，按平台标识）
     const existingIds = await this.getExistingExternalIds(userId, source, bills.map((b) => b.externalId));
@@ -91,6 +98,7 @@ export class ImportsService {
         : `${source}:na:${this.toDateStr(b.time)}:${b.amountCents.toString()}:${b.remark || ''}`;
       if (seenInBatch.has(dedupKey)) {
         skipped++;
+        skipDetails.push({ rowNo: i + 1, reason: '重复记录，跳过' });
         return;
       }
       seenInBatch.add(dedupKey);
@@ -103,11 +111,12 @@ export class ImportsService {
     for (const { b, rowNo } of deduped) {
       if (!b.externalId || existingIds.has(b.externalId)) {
         skipped++;
+        skipDetails.push({ rowNo, reason: b.externalId ? '交易单号已存在，跳过' : '缺少交易单号，跳过', raw: b.rawData });
         continue;
       }
       if (!b.amountCents || b.amountCents === 0n) {
         failed++;
-        failures.push({ rowNo, reason: '金额无效' });
+        failures.push({ rowNo, reason: '金额无效', raw: b.rawData });
         continue;
       }
 
@@ -168,7 +177,7 @@ export class ImportsService {
         source,
         fileName,
         groupId: groupId || null,
-        total: bills.length,
+        total: bills.length + skipList.length,
         success,
         skipped,
         failed,
@@ -176,18 +185,16 @@ export class ImportsService {
       },
     });
 
-    // 失败明细（kind=fail）与解析阶段跳过明细（kind=skip）统一入库，供详情查看
-    const detailRows: { batchId: bigint; kind: string; rowNo: number; reason: string; raw?: any }[] = failures.map(
-      (f) => ({ batchId: batch.id, kind: 'fail', rowNo: f.rowNo, reason: f.reason, raw: f.raw ? { data: f.raw } : undefined }),
-    );
-    for (const s of skips || []) {
-      detailRows.push({ batchId: batch.id, kind: 'skip', rowNo: s.rowNo, reason: s.reason });
-    }
+    // 失败明细（kind=fail）与跳过明细（kind=skip）统一入库，供详情查看；raw 存导致问题/跳过的原始字段值
+    const detailRows: { batchId: bigint; kind: string; rowNo: number; reason: string; raw?: any }[] = [
+      ...skipDetails.map((s) => ({ batchId: batch.id, kind: 'skip', rowNo: s.rowNo, reason: s.reason, raw: s.raw ? { data: s.raw } : undefined })),
+      ...failures.map((f) => ({ batchId: batch.id, kind: 'fail', rowNo: f.rowNo, reason: f.reason, raw: f.raw ? { data: f.raw } : undefined })),
+    ];
     if (detailRows.length > 0) {
       await this.prisma.importFailure.createMany({ data: detailRows });
     }
 
-    return { batchId: batch.id, total: bills.length, success, skipped, failed };
+    return { batchId: batch.id, total: bills.length + skipList.length, success, skipped, failed };
   }
 
   // 导入时按平台文件输出的个人账户信息自动创建/匹配账户。
@@ -208,7 +215,7 @@ private async ensureAccount(userId: bigint, source: string, info: string): Promi
     const batches = await this.prisma.importBatch.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: 500,
     });
     return batches;
   }

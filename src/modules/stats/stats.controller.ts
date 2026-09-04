@@ -10,12 +10,12 @@ export class StatsController {
 
   @Get('summary')
   summary(@CurrentUser() user: AuthUser, @Query() query: any) {
-    return this.statsService.summary(user.userId, { month: query.month, source: query.source });
+    return this.statsService.summary(user.userId, { month: query.month, source: query.source, start: query.start, end: query.end });
   }
 
   @Get('category')
   category(@CurrentUser() user: AuthUser, @Query() query: any) {
-    return this.statsService.category(user.userId, { month: query.month, source: query.source, type: query.type });
+    return this.statsService.category(user.userId, { month: query.month, source: query.source, type: query.type, start: query.start, end: query.end });
   }
 
   @Get('trend')

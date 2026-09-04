@@ -5,9 +5,9 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // 默认排除 neutral 账单；支持按来源筛选
-  async summary(userId: bigint, query: { month?: string; source?: string }) {
-    const { start, end } = this.monthRange(query.month);
+  // 默认排除 neutral 账单；支持按来源筛选；范围支持单月 month 或日期区间 start/end
+  async summary(userId: bigint, query: { month?: string; source?: string; start?: string; end?: string }) {
+    const { start, end } = this.rangeFor(query);
     const where = this.baseWhere(userId, query.source, start, end);
 
     const rows = await this.prisma.bill.groupBy({
@@ -18,23 +18,23 @@ export class StatsService {
 
     let income = 0n, expense = 0n, neutral = 0n;
     for (const r of rows) {
-      const sum = r._sum.amount || 0n;
+      const sum = this.absAmount(r._sum.amount);
       if (r.billType === 'income') income = sum;
-      else if (r.billType === 'expense') expense = -sum;
+      else if (r.billType === 'expense') expense = sum;
       else neutral = sum;
     }
     return {
       month: query.month || this.currentMonth(),
       income: income.toString(),
       expense: expense.toString(),
-      balance: (income + expense).toString(),
+      balance: (income - expense).toString(),
       neutral: neutral.toString(),
     };
   }
 
   // 分类占比（支出侧）
-  async category(userId: bigint, query: { month?: string; source?: string; type?: string }) {
-    const { start, end } = this.monthRange(query.month);
+  async category(userId: bigint, query: { month?: string; source?: string; type?: string; start?: string; end?: string }) {
+    const { start, end } = this.rangeFor(query);
     const where = this.baseWhere(userId, query.source, start, end);
     where.billType = query.type || 'expense';
     where.categoryId = { not: null };
@@ -50,7 +50,7 @@ export class StatsService {
 
     let total = 0n;
     const items = rows.map((r) => {
-      const amount = (r._sum.amount || 0n);
+      const amount = this.absAmount(r._sum.amount);
       total += amount;
       const cat = catMap.get(r.categoryId!.toString());
       return {
@@ -91,9 +91,9 @@ export class StatsService {
     const expenseMap = new Map<string, bigint>();
     for (const r of rows) {
       const key = `${r.billDate.getFullYear()}-${String(r.billDate.getMonth() + 1).padStart(2, '0')}`;
-      const sum = r._sum.amount || 0n;
+      const sum = this.absAmount(r._sum.amount);
       if (r.billType === 'income') incomeMap.set(key, (incomeMap.get(key) || 0n) + sum);
-      else if (r.billType === 'expense') expenseMap.set(key, (expenseMap.get(key) || 0n) - sum);
+      else if (r.billType === 'expense') expenseMap.set(key, (expenseMap.get(key) || 0n) + sum);
     }
 
     return labels.map((l) => ({
@@ -113,6 +113,22 @@ export class StatsService {
       };
     }
     return where;
+  }
+
+  protected absAmount(sum?: bigint | null): bigint {
+    if (sum === null || sum === undefined) return 0n;
+    return sum < 0n ? -sum : sum;
+  }
+
+  protected rangeFor(query: { month?: string; start?: string; end?: string }): { start?: string; end?: string } {
+    // 优先使用日期区间；否则回退单月
+    if (query.start || query.end) {
+      return {
+        start: query.start ? `${query.start}T00:00:00+08:00` : undefined,
+        end: query.end ? `${query.end}T23:59:59+08:00` : undefined,
+      };
+    }
+    return this.monthRange(query.month);
   }
 
   protected monthRange(month?: string): { start: string; end: string } {

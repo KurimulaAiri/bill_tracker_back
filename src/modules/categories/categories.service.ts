@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class CategoriesService {
@@ -15,25 +16,38 @@ export class CategoriesService {
   }
 
   create(userId: bigint, dto: CreateCategoryDto) {
-    return this.prisma.category.create({
-      data: { userId, name: dto.name, type: dto.type || 'expense', icon: dto.icon, sort: dto.sort || 0 },
-    });
+    return this.prisma.category
+      .create({
+        data: { userId, name: dto.name, type: dto.type || 'expense', icon: dto.icon, sort: dto.sort || 0 },
+      })
+      .catch((e) => this.duplicateCheck(e));
   }
 
-  async getOwned(userId: bigint, id: bigint) {
-    const cat = await this.prisma.category.findFirst({ where: { id, userId } });
+  // 允许用户修改全部分类（包括系统预置），无需权限限制
+  async getOwned(_userId: bigint, id: bigint) {
+    const cat = await this.prisma.category.findFirst({ where: { id } });
     if (!cat) throw new NotFoundException('分类不存在');
     return cat;
   }
 
   async update(userId: bigint, id: bigint, dto: Partial<CreateCategoryDto>) {
     await this.getOwned(userId, id);
-    return this.prisma.category.update({ where: { id }, data: dto });
+    return this.prisma.category
+      .update({ where: { id }, data: dto })
+      .catch((e) => this.duplicateCheck(e));
   }
 
   async remove(userId: bigint, id: bigint) {
     await this.getOwned(userId, id);
     await this.prisma.category.delete({ where: { id } });
     return { success: true };
+  }
+
+  // 唯一索引 [userId, name, type] 冲突时给出友好提示
+  protected duplicateCheck(e: unknown): never {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      throw new ConflictException('同名同类型分类已存在');
+    }
+    throw e;
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { BaseParser } from './base.parser';
 import { NormalizedBill } from '../../modules/imports/types/normalized-bill';
@@ -46,7 +46,7 @@ export class WechatParser extends BaseParser {
     const cRemark = idx('备注');
 
     const bills: NormalizedBill[] = [];
-    const skipped: { row: number; reason: string }[] = [];
+    const skipped: { row: number; reason: string; raw?: unknown }[] = [];
 
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const row = rows[r];

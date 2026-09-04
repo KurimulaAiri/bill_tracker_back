@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as iconv from 'iconv-lite';
 import { BaseParser } from './base.parser';
@@ -46,7 +46,7 @@ export class AlipayParser extends BaseParser {
     const cExternalId = idx('交易订单号');
 
     const bills: NormalizedBill[] = [];
-    const skipped: { row: number; reason: string }[] = [];
+    const skipped: { row: number; reason: string; raw?: unknown }[] = [];
 
     for (let r = headerIdx + 1; r < lines.length; r++) {
       const line = lines[r].trim();
@@ -56,7 +56,7 @@ export class AlipayParser extends BaseParser {
 
       const status = get(cStatus);
       if (status === '交易关闭' || status === '') {
-        skipped.push({ row: r + 1, reason: status ? `交易状态:${status}，不计入账` : '空行跳过' });
+        skipped.push({ row: r + 1, reason: status ? `交易状态:${status}，不计入账` : '空行跳过', raw: cols });
         continue;
       }
 

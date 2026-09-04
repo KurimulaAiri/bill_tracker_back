@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { BaseParser } from './base.parser';
 import { NormalizedBill } from '../../modules/imports/types/normalized-bill';
@@ -49,7 +49,7 @@ export class CcbSavingParser extends BaseParser {
     }
 
     const bills: NormalizedBill[] = [];
-    const skipped: { row: number; reason: string }[] = [];
+    const skipped: { row: number; reason: string; raw?: unknown }[] = [];
 
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const row = rows[r];
@@ -58,7 +58,7 @@ export class CcbSavingParser extends BaseParser {
 
       const seq = get(cSeq);
       if (!seq) {
-        skipped.push({ row: r + 1, reason: '序号为空，跳过行尾' });
+        skipped.push({ row: r + 1, reason: '序号为空，跳过行尾', raw: row });
         continue;
       }
 

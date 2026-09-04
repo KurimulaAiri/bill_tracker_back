@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as XLSX from 'xlsx';
 import { BaseParser } from './base.parser';
@@ -19,7 +19,7 @@ export class CcbCreditParser extends BaseParser {
   async parse(filePath: string): Promise<ParseResult> {
     const lower = filePath.toLowerCase();
     const bills: NormalizedBill[] = [];
-    const skipped: { row: number; reason: string }[] = [];
+    const skipped: { row: number; reason: string; raw?: unknown }[] = [];
     let total = 0;
     let cardNumber: string | undefined;
 
@@ -50,7 +50,7 @@ export class CcbCreditParser extends BaseParser {
   private parseRows(
     rows: any[][],
     bills: NormalizedBill[],
-    skipped: { row: number; reason: string }[],
+    skipped: { row: number; reason: string; raw?: unknown }[],
     onCard?: (v: string) => void,
   ): number {
     let headerIdx = -1;
@@ -119,7 +119,7 @@ export class CcbCreditParser extends BaseParser {
   private parsePdfText(
     text: string,
     bills: NormalizedBill[],
-    skipped: { row: number; reason: string }[],
+    skipped: { row: number; reason: string; raw?: unknown }[],
     onCard?: (v: string) => void,
   ): number {
     // 建行信用卡 PDF 为坐标定位文本：每条文本用 "1 0 0 1 x y Tm" 定位 + "(...)Tj" 输出。
@@ -220,18 +220,18 @@ export class CcbCreditParser extends BaseParser {
       cells[4] = unassigned.join(' ');
       const no = (cells[0] || '').trim();
       if (!no) {
-        skipped.push({ row: Math.round(y), reason: `无序号，跳过` });
+        skipped.push({ row: Math.round(y), reason: `无序号，跳过`, raw: cells });
         continue;
       }
       const tDate = (cells[1] || '').trim();
       if (!/^\d{8}$/.test(tDate)) {
-        skipped.push({ row: Math.round(y), reason: `交易日期无效(${tDate})` });
+        skipped.push({ row: Math.round(y), reason: `交易日期无效(${tDate})`, raw: cells });
         continue;
       }
       const amtRaw = (cells[5] || cells[6] || '').trim();
       const amtM = amtRaw.match(/([+-]?[\d,]+\.\d{2})/);
       if (!amtM) {
-        skipped.push({ row: Math.round(y), reason: `金额无效(${amtRaw})` });
+        skipped.push({ row: Math.round(y), reason: `金额无效(${amtRaw})`, raw: cells });
         continue;
       }
       const amountCents = this.toCents(amtM[1]);
