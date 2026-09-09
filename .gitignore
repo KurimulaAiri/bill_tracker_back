@@ -8,3 +8,5 @@ uploads
 .pnpm-store
 .pnpm-state
 coverage
+# pnpm 命名临时目录（Windows 8.3 短名形式，如 ZA0R40~6）
+/??????~?

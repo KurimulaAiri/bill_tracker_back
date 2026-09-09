@@ -7,9 +7,12 @@ import { UpdateAccountDto } from './dto/update-account.dto';
 export class AccountsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(userId: bigint) {
+  list(userId: bigint, query: { keyword?: string; type?: string } = {}) {
+    const where: any = { userId };
+    if (query.type) where.type = query.type;
+    if (query.keyword) where.name = { contains: query.keyword };
     return this.prisma.account.findMany({
-      where: { userId },
+      where,
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -38,5 +41,15 @@ export class AccountsService {
     await this.get(userId, id);
     await this.prisma.account.delete({ where: { id } });
     return { success: true };
+  }
+
+  /** 批量删除：按 ids 删除（限定当前用户），关联账单保留但脱离账户 */
+  async removeMany(userId: bigint, ids: string[]) {
+    const idList = [...new Set(ids)].map((i) => BigInt(i)).filter((i) => !isNaN(Number(i)));
+    if (idList.length === 0) return { success: false, message: '未选择账户' };
+    const result = await this.prisma.account.deleteMany({
+      where: { userId, id: { in: idList } },
+    });
+    return { success: true, removed: result.count };
   }
 }

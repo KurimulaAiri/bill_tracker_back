@@ -9,6 +9,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { BillsModule } from './modules/bills/bills.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { ImportsModule } from './modules/imports/imports.module';
+import { FieldMappingsModule } from './modules/field-mappings/field-mappings.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ImportsModule } from './modules/imports/imports.module';
     BillsModule,
     StatsModule,
     ImportsModule,
+    FieldMappingsModule,
   ],
   providers: [
     // 全局请求签名校验（HMAC-SHA256 + 时间戳窗口 + nonce 防重放）

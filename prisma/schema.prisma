@@ -30,6 +30,8 @@ model User {
   categories     Category[]
   bills          Bill[]
   importBatches  ImportBatch[]
+  importGroups   ImportGroup[]
+  fieldMappings  FieldMapping[]
 
   @@map("bill_user")
 }
@@ -73,6 +75,8 @@ model Category {
   icon      String?  @db.VarChar(50)
   /// 排序权重：数值越小越靠前
   sort      Int      @default(0)
+  /// 来源分类映射：用户自定义 [{source, value}]，导入时 sourceCategory 命中即归类到该分类（优先于内置映射表）
+  aliases   Json?
   /// 创建时间：自动生成
   createdAt DateTime @default(now())
   /// 更新时间：自动维护
@@ -126,6 +130,12 @@ model Bill {
   neutral    Boolean  @default(false)
   /// 交易时间：交易实际发生的时间
   billDate   DateTime
+  /// 来源导入批次ID：记录由此导入批次产生；快照语义，批次删除不影响账单（无外键约束）
+  importBatchId  BigInt?
+  /// 来源导入组ID：记录这笔账单属于"哪一次导入"（一次确认导入=一个组），快照语义（无外键约束）
+  importGroupId  BigInt?
+  /// 批次内来源文件快照：导入时的原始文件名，冗余记录"批次中的哪个文件"
+  batchFileName  String?  @db.VarChar(200)
   /// 创建时间：自动生成
   createdAt  DateTime @default(now())
   /// 更新时间：自动维护
@@ -140,11 +150,32 @@ model Bill {
   @@index([userId, billDate])
   @@index([userId, categoryId])
   @@index([userId, source])
+  @@index([userId, importBatchId])
   @@map("bill_bill")
 }
 
+/// 导入批次组：一次批量导入（多文件）的会话，批次通过 importGroupId 关联到组；
+/// groupKey 保存原批量会话ID，按 (userId, groupKey) 幂等复用，保证同一次批量导入的多文件落到同一组
+model ImportGroup {
+  /// 组ID：主键，数据库自增
+  id        BigInt   @id @default(autoincrement())
+  /// 所属用户ID：关联 bill_user.id；级联删除
+  userId    BigInt
+  /// 批量会话Key：与前端生成的批量导入会话ID（batch_xxx）一致，幂等键
+  groupKey  String   @db.VarChar(50)
+  /// 创建时间：导入时间，自动生成
+  createdAt DateTime @default(now())
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  batches ImportBatch[]
+
+  @@unique([userId, groupKey])
+  @@index([userId])
+  @@map("bill_import_group")
+}
+
 /// 导入批次表：每次账单文件导入产生一个批次，记录整体成功/失败/跳过统计；
-/// 同一次批量导入（多个文件）通过 groupId 关联，前端合并展示
+/// 同一次批量导入（多个文件）通过 importGroupId 关联到同一批次组，前端合并展示
 model ImportBatch {
   /// 批次ID：主键，数据库自增
   id        BigInt   @id @default(autoincrement())
@@ -154,7 +185,9 @@ model ImportBatch {
   source    String   @db.VarChar(20)
   /// 导入文件名：原始上传的文件名
   fileName  String   @db.VarChar(200)
-  /// 批量导入会话ID：同一次批量导入（多文件）共用同一 ID，用于前端合并为一条展示
+  /// 所属批次组ID：关联 bill_import_group.id；同一次批量导入的多文件共用同一组
+  importGroupId BigInt?
+  /// 批量导入会话ID（冗余兼容存量数据）：新导入同时写入 importGroupId 关联组表
   groupId   String?  @db.VarChar(50)
   /// 文件总笔数：解析出的记录总数
   total     Int      @default(0)
@@ -169,11 +202,13 @@ model ImportBatch {
   /// 创建时间：导入时间，自动生成
   createdAt DateTime @default(now())
 
-  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  failures  ImportFailure[]
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  importGroup ImportGroup?    @relation(fields: [importGroupId], references: [id], onDelete: SetNull)
+  failures    ImportFailure[]
 
   @@index([userId])
   @@index([userId, groupId])
+  @@index([importGroupId])
   @@map("bill_import_batch")
 }
 
@@ -198,4 +233,29 @@ model ImportFailure {
 
   @@index([batchId])
   @@map("bill_import_failure")
+}
+
+/// 字段映射配置表：用户自定义各来源账单文件的列名映射（如微信"收支"字段对应表头"收/支"列）
+/// 未配置（无记录）时解析器使用系统默认列名
+model FieldMapping {
+  /// 记录ID：主键，数据库自增
+  id         BigInt   @id @default(autoincrement())
+  /// 所属用户ID：关联 bill_user.id；级联删除
+  userId     BigInt
+  /// 来源：alipay=支付宝 wechat=微信 ccb_saving=建行活期 ccb_credit=建行信用卡
+  source     String   @db.VarChar(20)
+  /// 语义字段 key：如 time/amount/flow/counterParty/remark 等
+  field      String   @db.VarChar(50)
+  /// 用户配置的源表格列名：与文件表头精确匹配
+  columnName String   @db.VarChar(100)
+  /// 创建时间：自动生成
+  createdAt  DateTime @default(now())
+  /// 更新时间：自动维护
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, source, field])
+  @@index([userId])
+  @@map("bill_field_mapping")
 }

@@ -88,6 +88,16 @@ export class ImportsService {
       const key = `${c.type}:${c.name}`;
       categoryCache.set(key, c.id);
     }
+    // 用户自定义源分类映射：(source|sourceCategory) -> 分类（含收支类型，用于校验）
+    const aliasMap = new Map<string, { id: bigint; type: string }>();
+    for (const c of categories) {
+      const aliases = (c as any).aliases;
+      if (Array.isArray(aliases)) {
+        for (const a of aliases) {
+          if (a && a.source && a.value) aliasMap.set(`${a.source}|${a.value}`, { id: c.id, type: c.type });
+        }
+      }
+    }
 
     // 批次内按平台标识去重（同文件重复行、前端重复提交等）
     const seenInBatch = new Set<string>();
@@ -120,13 +130,22 @@ export class ImportsService {
         continue;
       }
 
-      // 分类解析：优先用户指定 categoryId，否则按来源映射 sourceCategory
+      // 分类解析：1) 用户指定 categoryId 2) 用户自定义映射（分类管理页配置的 aliases，优先于内置表）
       let categoryId = b.categoryId;
       if (!categoryId) {
-        const mapped = this.mapCategory(source, b.sourceCategory, b.billType);
-        if (mapped) {
-          const cacheKey = `${b.billType}:${mapped}`;
-          categoryId = categoryCache.get(cacheKey);
+        const aliasHit = b.sourceCategory ? aliasMap.get(`${source}|${b.sourceCategory}`) : undefined;
+        if (aliasHit && aliasHit.type === b.billType) {
+          categoryId = aliasHit.id;
+        } else {
+          const mapped = this.mapCategory(source, b.sourceCategory, b.billType);
+          const cacheKey = mapped && `${b.billType}:${mapped}`;
+          categoryId = cacheKey ? categoryCache.get(cacheKey) : undefined;
+          // 兜底：映射出的分类在该收支类型下不存在时（如微信红包/转账映射的"资金互转"仅为支出类型），
+          // 回退"其他收入/其他支出"，保证导入记录都有分类
+          if (!categoryId) {
+            const fallback = b.billType === 'income' ? '其他收入' : '其他支出';
+            categoryId = categoryCache.get(`${b.billType}:${fallback}`);
+          }
         }
       }
 
@@ -144,6 +163,18 @@ export class ImportsService {
         }
       }
 
+      // 叠加优惠标注：支付方式含 &（如 花呗&碰一下立减）时，账户归并到主方式，
+      // & 后的优惠/减免方式拆出并存到 extraJson，便于详情查看
+      const extraJson = { ...(b.extraJson || {}) };
+      if (b.accountHint && String(b.accountHint).includes('&')) {
+        const perks = String(b.accountHint)
+          .split('&')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(1);
+        if (perks.length) extraJson['优惠/减免'] = perks.join('、');
+      }
+
       createMany.push({
         userId,
         accountId: billAccountId,
@@ -159,31 +190,51 @@ export class ImportsService {
         payMethod: b.payMethod || null,
         cardNo: b.cardNo || null,
         status: b.status || null,
-        extraJson: b.extraJson || undefined,
+        extraJson: Object.keys(extraJson).length ? extraJson : undefined,
         neutral: b.neutral,
         rawData: b.rawData ? { data: b.rawData } : undefined,
         billDate: this.normalizeTime(b.time),
       });
     }
 
-    if (createMany.length > 0) {
-      await this.prisma.bill.createMany({ data: createMany });
+    // 批次组：同一次批量导入（groupId 相同）幂等复用同一组记录
+    let importGroupId: bigint | null = null;
+    if (groupId) {
+      const g = await this.prisma.importGroup.upsert({
+        where: { userId_groupKey: { userId, groupKey: groupId } },
+        update: {},
+        create: { userId, groupKey: groupId },
+      });
+      importGroupId = g.id;
     }
-    success = createMany.length;
 
+    // 先建批次获取批次ID，账单写入批次快照（importBatchId + batchFileName），满足"明细可溯源到批次/文件"
     const batch = await this.prisma.importBatch.create({
       data: {
         userId,
         source,
         fileName,
         groupId: groupId || null,
+        importGroupId,
         total: bills.length + skipList.length,
-        success,
+        success: 0,
         skipped,
         failed,
         status: 'done',
       },
     });
+
+    if (createMany.length > 0) {
+      await this.prisma.bill.createMany({
+        data: createMany.map((b) => ({
+          ...b,
+          importBatchId: batch.id,
+          importGroupId,
+          batchFileName: fileName,
+        })),
+      });
+    }
+    success = createMany.length;
 
     // 失败明细（kind=fail）与跳过明细（kind=skip）统一入库，供详情查看；raw 存导致问题/跳过的原始字段值
     const detailRows: { batchId: bigint; kind: string; rowNo: number; reason: string; raw?: any }[] = [
@@ -201,7 +252,8 @@ export class ImportsService {
 // 唯一性：以 (userId, name) 唯一索引为准，同名账户一律复用，不重复创建。
 private async ensureAccount(userId: bigint, source: string, info: string): Promise<bigint | null> {
     const cfg = this.SOURCE_ACCOUNT[source];
-    const name = cfg && info ? `${cfg.prefix}-${info.trim()}` : '';
+    if (!cfg) return null;
+    const name = this.normalizeAccountName(cfg.prefix, info);
     if (!name || name.length > 50) return null;
     const account = await this.prisma.account.upsert({
       where: { userId_name: { userId, name } },
@@ -209,6 +261,15 @@ private async ensureAccount(userId: bigint, source: string, info: string): Promi
       create: { userId, name, type: cfg!.type },
     });
     return account.id;
+  }
+
+  // 账户命名：`前缀-主支付方式`，如 支付宝-花呗。
+  // 1) 支付方式为空白/占位符（/-、无）时只保留前缀本身，如 微信- / -> 微信
+  // 2) 叠加优惠只取 & 前的主支付方式：花呗&碰一下立减 -> 支付宝-花呗
+  protected normalizeAccountName(prefix: string, info: string): string {
+    const main = String(info || '').trim().split('&')[0].trim();
+    if (!main || /^[-/]+$/.test(main) || main === '无') return prefix;
+    return `${prefix}-${main}`;
   }
 
   async batches(userId: bigint) {

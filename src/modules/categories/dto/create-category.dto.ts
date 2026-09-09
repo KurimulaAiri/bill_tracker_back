@@ -15,4 +15,7 @@ export class CreateCategoryDto {
   @IsOptional()
   @IsNumber()
   sort?: number = 0;
+
+  @IsOptional()
+  aliases?: { source: string; value: string }[] | null;
 }

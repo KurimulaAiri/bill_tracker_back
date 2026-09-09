@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Query, Body, Param, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { AccountsService } from './accounts.service';
 import { CreateAccountDto } from './dto/create-account.dto';
 import { UpdateAccountDto } from './dto/update-account.dto';
@@ -11,13 +11,19 @@ export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser) {
-    return this.accountsService.list(user.userId);
+  list(@CurrentUser() user: AuthUser, @Query() query: any) {
+    return this.accountsService.list(user.userId, { keyword: query.keyword, type: query.type });
   }
 
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateAccountDto) {
     return this.accountsService.create(user.userId, dto);
+  }
+
+  // 批量删除：body { ids: string[] }
+  @Post('batch-delete')
+  removeMany(@CurrentUser() user: AuthUser, @Body() body: { ids?: string[] }) {
+    return this.accountsService.removeMany(user.userId, body?.ids || []);
   }
 
   @Put(':id')

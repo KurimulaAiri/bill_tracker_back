@@ -18,7 +18,14 @@ export class CategoriesService {
   create(userId: bigint, dto: CreateCategoryDto) {
     return this.prisma.category
       .create({
-        data: { userId, name: dto.name, type: dto.type || 'expense', icon: dto.icon, sort: dto.sort || 0 },
+        data: {
+          userId,
+          name: dto.name,
+          type: dto.type || 'expense',
+          icon: dto.icon,
+          sort: dto.sort || 0,
+          aliases: dto.aliases && dto.aliases.length ? dto.aliases : undefined,
+        },
       })
       .catch((e) => this.duplicateCheck(e));
   }
@@ -32,8 +39,11 @@ export class CategoriesService {
 
   async update(userId: bigint, id: bigint, dto: Partial<CreateCategoryDto>) {
     await this.getOwned(userId, id);
+    // aliases 为 Json 类型，null 不被接受：显式构造 data，仅传存在的字段（空数组表示清空映射）
+    const data: any = { name: dto.name, type: dto.type, icon: dto.icon, sort: dto.sort };
+    if (dto.aliases !== undefined) data.aliases = dto.aliases;
     return this.prisma.category
-      .update({ where: { id }, data: dto })
+      .update({ where: { id }, data })
       .catch((e) => this.duplicateCheck(e));
   }
 
