@@ -125,8 +125,10 @@ pipeline {
             echo "   bill_tracker_back 构建完成"
             echo "   应用目录: ${HOST_APP_DIR}"
             echo "   入口文件: dist/src/main.js"
-            if (params.RESTART_APP == false) {
-                echo "   进程未在 Jenkins 重启：请到宝塔 PM2 重载 bill_tracker_back 使新 dist 生效"
+            script {
+                if (params.RESTART_APP == false) {
+                    echo "   进程未在 Jenkins 重启：请到宝塔 PM2 重载 bill_tracker_back 使新 dist 生效"
+                }
             }
             echo "=================================================="
         }
