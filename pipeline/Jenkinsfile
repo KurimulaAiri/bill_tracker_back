@@ -42,7 +42,8 @@ pipeline {
     }
 
     parameters {
-        booleanParam(name: 'SKIP_BUILD', defaultValue: false, description: '跳过构建，仅重启服务')
+        booleanParam(name: 'SKIP_BUILD', defaultValue: false, description: '跳过同步与构建，仅执行数据库迁移')
+        booleanParam(name: 'RESTART_APP', defaultValue: false, description: '由 Jenkins 重启服务。宝塔 PM2 托管进程时必须保持 false，否则会抢进程并脱离 PM2 管理')
     }
 
     stages {
@@ -90,12 +91,27 @@ pipeline {
             }
         }
 
-        stage("Migrate, Start & Verify") {
+        stage("Migrate") {
             steps {
-                echo "===== 执行数据库迁移、重启服务并验证 ====="
+                echo "===== 执行数据库迁移（不触碰任何进程） ====="
                 withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
                     sh """
-                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh migrate && bash \${HOST_APP_DIR}/deploy/deploy.sh restart"
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh migrate"
+                    """
+                }
+            }
+        }
+
+        // 默认关闭：生产进程交由宝塔 PM2 守护。
+        // 勾选 RESTART_APP 时 Jenkins 会 kill 现有进程并自行拉起 —— PM2 托管模式下不要开，
+        // 那会把进程踢出 PM2 管理，出现「两套机制抢进程」的情况。
+        stage("Restart & Verify") {
+            when { expression { params.RESTART_APP == true } }
+            steps {
+                echo "===== 重启服务并验证（RESTART_APP=true） ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
+                    sh """
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh restart"
                     """
                 }
             }
@@ -106,9 +122,12 @@ pipeline {
         success {
             echo ""
             echo "=================================================="
-            echo "   bill_tracker_back 部署成功"
+            echo "   bill_tracker_back 构建完成"
             echo "   应用目录: ${HOST_APP_DIR}"
             echo "   入口文件: dist/src/main.js"
+            if (params.RESTART_APP == false) {
+                echo "   进程未在 Jenkins 重启：请到宝塔 PM2 重载 bill_tracker_back 使新 dist 生效"
+            }
             echo "=================================================="
         }
         failure {
