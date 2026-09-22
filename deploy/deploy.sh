@@ -21,7 +21,13 @@ DEPLOY_ROOT="/opt/node-deploy"
 APP_DIR="${DEPLOY_ROOT}/${PROJECT}"
 NODE_BIN="/www/server/nodejs/v22.14.0/bin"
 NPM_REGISTRY="https://registry.npmmirror.com"
-APP_PORT="${APP_PORT:-3000}"
+# 端口优先级：环境变量 APP_PORT > .env 中的 PORT > 默认 3001
+# 注意：3000 已被同机上的 local-ops-api MCP Server 占用，不要改回 3000
+APP_PORT="${APP_PORT:-}"
+if [ -z "${APP_PORT}" ] && [ -f "${APP_DIR}/.env" ]; then
+    APP_PORT="$(sed -n 's/^PORT=//p' "${APP_DIR}/.env" | tr -d '"' | head -1)"
+fi
+APP_PORT="${APP_PORT:-3001}"
 ENTRY="dist/src/main.js"
 LOG_FILE="${APP_DIR}/app.log"
 PID_FILE="${APP_DIR}/app.pid"
