@@ -42,7 +42,9 @@ model Account {
   id        BigInt   @id @default(autoincrement())
   /// 所属用户ID：关联 bill_user.id；级联删除
   userId    BigInt
-  /// 账户名称：如"支付宝"、"建行储蓄卡"，同一用户下不可重名
+  /// 父账户ID：NULL 为顶层账户（如"微信""支付宝""建设银行"），非空为子账户（如"零钱""花呗""储蓄卡-2891"）
+  parentId  BigInt?
+  /// 账户名称：同一用户同一父账户下不可重名
   name      String   @db.VarChar(50)
   /// 账户类型：cash=现金 bank=银行卡 alipay=支付宝 wechat=微信 credit=信用卡 other=其他
   type      String   @db.VarChar(20)
@@ -53,11 +55,14 @@ model Account {
   /// 更新时间：自动维护
   updatedAt DateTime @updatedAt
 
-  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bills Bill[]
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   Account?  @relation("AccountTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Account[] @relation("AccountTree")
+  bills    Bill[]
 
   @@index([userId])
-  @@unique([userId, name])
+  @@index([parentId])
+  @@unique([userId, parentId, name])
   @@map("bill_account")
 }
 
@@ -197,6 +202,8 @@ model ImportBatch {
   skipped   Int      @default(0)
   /// 失败笔数：金额无效等原因入库失败
   failed    Int      @default(0)
+  /// 文件头元信息：解析时提取的文件头部信息与表尾汇总（微信昵称/时间范围/收入支出中性汇总等），JSON
+  meta      Json?
   /// 批次状态：done=已完成
   status    String   @default("done") @db.VarChar(20)
   /// 创建时间：导入时间，自动生成

@@ -10,18 +10,34 @@ export class StatsService {
     const { start, end } = this.rangeFor(query);
     const where = this.baseWhere(userId, query.source, start, end);
 
-    const rows = await this.prisma.bill.groupBy({
-      by: ['billType'],
-      where,
-      _sum: { amount: true },
-    });
+    const [rows, neutralRows] = await Promise.all([
+      this.prisma.bill.groupBy({
+        by: ['billType'],
+        where,
+        _sum: { amount: true },
+      }),
+      // 中性交易：neutral=true 标记的账单（baseWhere 已排除，需单独统计）
+      this.prisma.bill.groupBy({
+        by: ['billType'],
+        where: {
+          userId,
+          ...(query.source ? { source: query.source } : {}),
+          ...(where.billDate ? { billDate: where.billDate } : {}),
+          neutral: true,
+        },
+        _sum: { amount: true },
+      }),
+    ]);
 
     let income = 0n, expense = 0n, neutral = 0n;
     for (const r of rows) {
       const sum = this.absAmount(r._sum.amount);
       if (r.billType === 'income') income = sum;
       else if (r.billType === 'expense') expense = sum;
-      else neutral = sum;
+      else neutral += sum; // billType='neutral' 且未标记 neutral 标记的
+    }
+    for (const r of neutralRows) {
+      neutral += this.absAmount(r._sum.amount);
     }
     return {
       month: query.month || this.currentMonth(),

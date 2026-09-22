@@ -1,0 +1,122 @@
+// ============================================================
+// bill_tracker_back 后端部署流水线
+//
+// 架构说明：
+//   Jenkins 运行在容器内，通过 SSH 操作宿主机完成构建与发布。
+//   宿主机 = 宝塔面板所在机器，node 使用宝塔自带运行时。
+//
+// 流程：
+//   1. Pull Code      容器内拉取 GitHub 代码
+//   2. Sync to Host   源码打包 scp 到宿主机 /opt/node-deploy/bill_tracker_back
+//   3. Build          宿主机用宝塔 node 安装依赖 + prisma generate + nest build
+//   4. Start & Verify 重启服务并检查进程存活与 HTTP 可用性
+//
+// 注意：
+//   - 应用目录 /opt/node-deploy/bill_tracker_back 同时承载源码与编译产物（dist/），
+//     并保留 node_modules，便于直接 node dist/src/main.js 启动。
+//   - .env 不会被覆盖：首次部署前需在服务器上准备好该文件。
+// ============================================================
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO_URL     = "git@github.com:KurimulaAiri/bill_tracker_back.git"
+        GIT_BRANCH       = "master"
+
+        HOST_USER        = "root"
+        HOST_IP          = "172.21.0.1"
+        HOST_SSH_PORT    = "25184"
+
+        // 宿主机部署根目录（node 项目统一约定）
+        HOST_DEPLOY_ROOT = "/opt/node-deploy"
+        HOST_APP_DIR     = "/opt/node-deploy/bill_tracker_back"
+        NODE_BIN_DIR     = "/www/server/nodejs/v22.14.0/bin"
+
+        TAR_NAME         = "bill_tracker_back-src.tar.gz"
+    }
+
+    options {
+        skipDefaultCheckout true
+        timeout(time: 25, unit: "MINUTES")
+        timestamps()
+    }
+
+    parameters {
+        booleanParam(name: 'SKIP_BUILD', defaultValue: false, description: '跳过构建，仅重启服务')
+    }
+
+    stages {
+        stage("Pull Code") {
+            steps {
+                echo "===== 拉取代码 ${GIT_BRANCH} ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "github-ssh-key", keyFileVariable: "GIT_SSH_KEY")]) {
+                    sh """
+                        export GIT_SSH_COMMAND="ssh -i \${GIT_SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                        git config --global --add safe.directory '*' || true
+                        git init || true
+                        git remote add origin \${GIT_REPO_URL} || git remote set-url origin \${GIT_REPO_URL}
+                        git fetch --all --prune
+                        git reset --hard origin/\${GIT_BRANCH}
+                        git clean -fdx -e node_modules || true
+                        echo "当前提交: \$(git rev-parse --short HEAD)"
+                    """
+                }
+            }
+        }
+
+        stage("Sync to Host") {
+            when { expression { params.SKIP_BUILD == false } }
+            steps {
+                echo "===== 同步源码到宿主机 ${HOST_APP_DIR}（保留 node_modules 与 .env） ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
+                    sh """
+                        tar czf /tmp/\${TAR_NAME} --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='.idea' --exclude='.trae' --exclude='.env' .
+                        scp -i \${HOST_SSH_KEY} -P \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/\${TAR_NAME} \${HOST_USER}@\${HOST_IP}:/tmp/
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "mkdir -p \${HOST_APP_DIR} && tar xzf /tmp/\${TAR_NAME} -C \${HOST_APP_DIR}/ --overwrite && rm -f /tmp/\${TAR_NAME} && echo 源码已同步（node_modules/.env 已保留）"
+                    """
+                }
+            }
+        }
+
+        stage("Build") {
+            when { expression { params.SKIP_BUILD == false } }
+            steps {
+                echo "===== 宿主机构建 ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
+                    sh """
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh build"
+                    """
+                }
+            }
+        }
+
+        stage("Start & Verify") {
+            steps {
+                echo "===== 重启服务并验证 ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
+                    sh """
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh restart"
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo ""
+            echo "=================================================="
+            echo "   bill_tracker_back 部署成功"
+            echo "   应用目录: ${HOST_APP_DIR}"
+            echo "   入口文件: dist/src/main.js"
+            echo "=================================================="
+        }
+        failure {
+            echo ""
+            echo "=================================================="
+            echo "   bill_tracker_back 部署失败"
+            echo "   查看日志: tail -100 ${HOST_APP_DIR}/app.log"
+            echo "=================================================="
+        }
+    }
+}

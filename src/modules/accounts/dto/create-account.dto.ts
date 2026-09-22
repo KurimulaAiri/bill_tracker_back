@@ -11,4 +11,7 @@ export class CreateAccountDto {
   @IsOptional()
   @IsNumber()
   balance?: number = 0;
+
+  @IsOptional()
+  parentId?: string;
 }

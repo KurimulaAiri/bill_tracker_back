@@ -11,7 +11,7 @@ export class ImportsController {
 
   @Post('confirm')
   async confirm(@CurrentUser() user: AuthUser, @Body() body: any) {
-    const { source, fileName, accountId, groupId, skips, bills } = body || {};
+    const { source, fileName, accountId, groupId, skips, meta, bills } = body || {};
     if (!source || !Array.isArray(bills)) {
       return { error: '参数错误' };
     }
@@ -31,6 +31,7 @@ export class ImportsController {
       accountId: accountId ? BigInt(accountId) : undefined,
       groupId: groupId || undefined,
       skips: Array.isArray(skips) ? skips : undefined,
+      meta: meta && typeof meta === 'object' ? meta : undefined,
       bills: normalized,
     });
   }

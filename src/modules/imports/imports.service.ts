@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NormalizedBill } from './types/normalized-bill';
 
@@ -40,12 +41,12 @@ const WECHAT_CATEGORY_MAP: Record<string, string> = {
 export class ImportsService {
   private readonly logger = new Logger(ImportsService.name);
 
-  // 来源 -> 账户命名前缀/类型：自动创建账户时使用
-  private readonly SOURCE_ACCOUNT: Record<string, { prefix: string; type: string }> = {
-    alipay: { prefix: '支付宝', type: 'alipay' },
-    wechat: { prefix: '微信', type: 'wechat' },
-    ccb_saving: { prefix: '建行活期', type: 'bank' },
-    ccb_credit: { prefix: '建行信用卡', type: 'credit' },
+  // 来源 -> 账户父节点/子账户类型配置：微信/支付宝归其自身，建行统一归「建设银行」
+  private readonly SOURCE_ACCOUNT: Record<string, { parentName: string; parentType: string; childType: string; childPrefix?: string }> = {
+    alipay: { parentName: '支付宝', parentType: 'alipay', childType: 'alipay' },
+    wechat: { parentName: '微信', parentType: 'wechat', childType: 'wechat' },
+    ccb_saving: { parentName: '建设银行', parentType: 'bank', childType: 'bank', childPrefix: '储蓄卡' },
+    ccb_credit: { parentName: '建设银行', parentType: 'bank', childType: 'credit', childPrefix: '信用卡' },
   };
 
   constructor(
@@ -61,10 +62,11 @@ export class ImportsService {
       accountId?: bigint;
       groupId?: string; // 批量导入会话ID：同一次批量导入的多文件共用
       skips?: { rowNo: number; reason: string; raw?: unknown }[]; // 解析阶段跳过的明细（重复单号/状态无效等），raw 为导致跳过的原始值
+      meta?: Record<string, unknown>; // 文件头元信息（昵称/时间范围/表尾汇总等），随批次保存
       bills: (NormalizedBill & { categoryId?: bigint; note?: string })[];
     },
   ) {
-    const { source, fileName, bills, accountId, groupId, skips } = payload;
+    const { source, fileName, bills, accountId, groupId, skips, meta } = payload;
     const skipList = Array.isArray(skips) ? skips : [];
 
     // 跳过/失败计数与明细统一：解析阶段跳过直接计入 skipped 并有明细（kind=skip）
@@ -220,6 +222,7 @@ export class ImportsService {
         success: 0,
         skipped,
         failed,
+        meta: meta && Object.keys(meta).length ? (meta as Prisma.InputJsonValue) : undefined,
         status: 'done',
       },
     });
@@ -248,28 +251,45 @@ export class ImportsService {
     return { batchId: batch.id, total: bills.length + skipList.length, success, skipped, failed };
   }
 
-  // 导入时按平台文件输出的个人账户信息自动创建/匹配账户。
-// 唯一性：以 (userId, name) 唯一索引为准，同名账户一律复用，不重复创建。
+  // 导入时按平台文件输出的个人账户信息自动创建/匹配父+子账户。
+// 结构：微信/支付宝（父）-> 支付方式子账户；建设银行（父）-> 储蓄卡/信用卡-卡号后四位子账户
 private async ensureAccount(userId: bigint, source: string, info: string): Promise<bigint | null> {
     const cfg = this.SOURCE_ACCOUNT[source];
     if (!cfg) return null;
-    const name = this.normalizeAccountName(cfg.prefix, info);
-    if (!name || name.length > 50) return null;
-    const account = await this.prisma.account.upsert({
-      where: { userId_name: { userId, name } },
+    const parent = await this.ensureParentAccount(userId, cfg.parentName, cfg.parentType);
+    const childName = this.normalizeChildName(cfg, info);
+    // 支付方式为空（微信/支付宝）：直接挂到父账户本身
+    if (childName === null) return parent.id;
+    if (childName.length > 50) return null;
+    const child = await this.prisma.account.upsert({
+      where: { userId_parentId_name: { userId, parentId: parent.id, name: childName } },
       update: {},
-      create: { userId, name, type: cfg!.type },
+      create: { userId, parentId: parent.id, name: childName, type: cfg.childType },
     });
-    return account.id;
+    return child.id;
   }
 
-  // 账户命名：`前缀-主支付方式`，如 支付宝-花呗。
-  // 1) 支付方式为空白/占位符（/-、无）时只保留前缀本身，如 微信- / -> 微信
-  // 2) 叠加优惠只取 & 前的主支付方式：花呗&碰一下立减 -> 支付宝-花呗
-  protected normalizeAccountName(prefix: string, info: string): string {
+  // 确保父账户存在（findFirst 不存在则创建），按 (userId, parentId=null, name) 唯一兜底
+  private async ensureParentAccount(userId: bigint, name: string, type: string) {
+    const parent = await this.prisma.account.findFirst({
+      where: { userId, parentId: null, name, type },
+    });
+    if (parent) return parent;
+    return this.prisma.account.create({ data: { userId, name, type } });
+  }
+
+  // 子账户命名：微信/支付宝取主支付方式（如 零钱、花呗；含 & 取主支付方式；空/占位符返回 null 归父账户本身）。
+  // 建行（childPrefix 储蓄卡/信用卡）取卡号后四位生成 `储蓄卡-1234`/`信用卡-1234`；卡号为空(或无误)时用默认类型名。
+  protected normalizeChildName(cfg: { childPrefix?: string }, info: string): string | null {
     const main = String(info || '').trim().split('&')[0].trim();
-    if (!main || /^[-/]+$/.test(main) || main === '无') return prefix;
-    return `${prefix}-${main}`;
+    const isEmpty = !main || /^[-/]+$/.test(main) || main === '无';
+    if (cfg.childPrefix) {
+      if (isEmpty) return cfg.childPrefix;
+      const last4 = main.replace(/\D/g, '').slice(-4);
+      return last4 ? `${cfg.childPrefix}-${last4}` : cfg.childPrefix;
+    }
+    if (isEmpty) return null;
+    return main;
   }
 
   async batches(userId: bigint) {
@@ -363,10 +383,11 @@ private async ensureAccount(userId: bigint, source: string, info: string): Promi
     return { removed, groups: groups.slice(0, 50) };
   }
 
-  // 按来源分别映射：支付宝用交易分类，微信用交易类型
+  // 按来源分别映射：支付宝用交易分类，微信用交易类型；本地导出回导分类列已是系统分类名，直配
   protected mapCategory(source: string, sourceCategory: string | undefined, billType: string): string | undefined {
     if (!sourceCategory) return undefined;
     if (billType === 'neutral') return undefined;
+    if (source === 'export') return sourceCategory;
     const table = source === 'wechat' ? WECHAT_CATEGORY_MAP : ALIPAY_CATEGORY_MAP;
     const mapped = table[sourceCategory];
     if (mapped) return mapped === '退款收入' && billType === 'expense' ? '其他支出' : mapped;
