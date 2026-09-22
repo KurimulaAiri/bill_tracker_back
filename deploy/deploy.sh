@@ -32,6 +32,17 @@ export PATH="${NODE_BIN}:${PATH}"
 log() { echo "[$(date '+%F %T')] [${PROJECT}] $*"; }
 
 # ------------------------------------------------------------
+# 列出监听 APP_PORT 的进程 PID
+# ------------------------------------------------------------
+list_port_pids() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -lptnH "sport = :${APP_PORT}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u
+    elif command -v fuser >/dev/null 2>&1; then
+        fuser -n tcp "${APP_PORT}" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u
+    fi
+}
+
+# ------------------------------------------------------------
 # 停止旧进程
 # ------------------------------------------------------------
 do_stop() {
@@ -48,6 +59,21 @@ do_stop() {
     fi
     # 兜底：按入口路径匹配残留进程
     pkill -f "${APP_DIR}/${ENTRY}" 2>/dev/null || true
+
+    # 兜底：检查端口占用。只清理"命令行包含本应用目录"的进程，其余仅报告不动手，
+    # 避免误杀同机上别的服务
+    local p cmd
+    for p in $(list_port_pids); do
+        cmd="$(tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null || true)"
+        log "端口 ${APP_PORT} 被 PID=${p} 占用: ${cmd:-<无法读取 cmdline>}"
+        if echo "${cmd}" | grep -q "${APP_DIR}"; then
+            log "  -> 属于本应用目录，强制结束 PID=${p}"
+            kill -9 "${p}" 2>/dev/null || true
+        else
+            log "  -> 不属于本应用目录，已跳过（需人工确认该服务是否应让出 ${APP_PORT}）"
+        fi
+    done
+    sleep 1
 }
 
 # ------------------------------------------------------------
