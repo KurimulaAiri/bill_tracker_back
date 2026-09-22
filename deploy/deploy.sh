@@ -21,11 +21,15 @@ DEPLOY_ROOT="/opt/node-deploy"
 APP_DIR="${DEPLOY_ROOT}/${PROJECT}"
 NODE_BIN="/www/server/nodejs/v22.14.0/bin"
 NPM_REGISTRY="https://registry.npmmirror.com"
-# 端口优先级：环境变量 APP_PORT > .env 中的 PORT > 默认 3001
+# 端口优先级：环境变量 APP_PORT > .env.production > .env > 默认 3001
 # 注意：3000 已被同机上的 local-ops-api MCP Server 占用，不要改回 3000
 APP_PORT="${APP_PORT:-}"
-if [ -z "${APP_PORT}" ] && [ -f "${APP_DIR}/.env" ]; then
-    APP_PORT="$(sed -n 's/^PORT=//p' "${APP_DIR}/.env" | tr -d '"' | head -1)"
+if [ -z "${APP_PORT}" ]; then
+    for f in "${APP_DIR}/.env.production" "${APP_DIR}/.env"; do
+        [ -f "${f}" ] || continue
+        v="$(sed -n 's/^PORT=//p' "${f}" | tr -d '"' | head -1)"
+        if [ -n "${v}" ]; then APP_PORT="${v}"; break; fi
+    done
 fi
 APP_PORT="${APP_PORT:-3001}"
 ENTRY="dist/src/main.js"
@@ -140,7 +144,11 @@ do_start() {
     do_stop
     cd "${APP_DIR}"
 
-    log "启动服务 (端口 ${APP_PORT}) ..."
+    # 仅在启动阶段声明生产环境（不能全局 export，否则 pnpm install 会跳过 devDependencies
+    # 导致 nest build 找不到 @nestjs/cli）。应用据此加载 .env.production。
+    export NODE_ENV="production"
+
+    log "启动服务 (NODE_ENV=production 端口 ${APP_PORT}) ..."
     : >> "${LOG_FILE}"
     nohup node "${ENTRY}" >> "${LOG_FILE}" 2>&1 &
     local pid=$!

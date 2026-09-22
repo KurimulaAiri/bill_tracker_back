@@ -13,7 +13,11 @@ import { FieldMappingsModule } from './modules/field-mappings/field-mappings.mod
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // 加载顺序：先 .env（密钥，不入库），再 .env.<NODE_ENV>（环境配置，入库、可覆盖）
+      envFilePath: ['.env', `.env.${process.env.NODE_ENV || 'development'}`],
+    }),
     PrismaModule,
     AuthModule,
     AccountsModule,
