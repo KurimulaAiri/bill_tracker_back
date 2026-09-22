@@ -80,6 +80,24 @@ do_build() {
 }
 
 # ------------------------------------------------------------
+# 数据库迁移（prisma migrate deploy，幂等）
+# ------------------------------------------------------------
+do_migrate() {
+    if [ ! -f "${APP_DIR}/.env" ]; then
+        log "跳过迁移：未找到 ${APP_DIR}/.env"
+        return 0
+    fi
+    cd "${APP_DIR}"
+    log "执行数据库迁移 (prisma migrate deploy) ..."
+    if pnpm exec prisma migrate deploy; then
+        log "数据库迁移完成 ✓"
+    else
+        log "⚠️ 数据库迁移失败，请检查 DATABASE_URL 与数据库是否已创建"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------
 # 启动
 # ------------------------------------------------------------
 do_start() {
@@ -139,10 +157,11 @@ do_status() {
 }
 
 case "${1:-}" in
-    deploy)  do_build; do_start; do_status ;;
+    deploy)  do_build; do_migrate; do_start; do_status ;;
+    migrate) do_migrate ;;
     build)   do_build ;;
     restart) do_start; do_status ;;
     stop)    do_stop ;;
     status)  do_status ;;
-    *) echo "用法: $0 [deploy|build|restart|stop|status]"; exit 2 ;;
+    *) echo "用法: $0 [deploy|migrate|build|restart|stop|status]"; exit 2 ;;
 esac

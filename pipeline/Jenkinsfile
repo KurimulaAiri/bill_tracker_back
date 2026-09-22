@@ -90,12 +90,12 @@ pipeline {
             }
         }
 
-        stage("Start & Verify") {
+        stage("Migrate, Start & Verify") {
             steps {
-                echo "===== 重启服务并验证 ====="
+                echo "===== 执行数据库迁移、重启服务并验证 ====="
                 withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
                     sh """
-                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh restart"
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh migrate && bash \${HOST_APP_DIR}/deploy/deploy.sh restart"
                     """
                 }
             }
