@@ -5,6 +5,7 @@
 # 用法:
 #   deploy.sh deploy   安装依赖 + prisma generate + 构建，并重启服务
 #   deploy.sh build    只构建，不重启
+#   deploy.sh diff     只输出线上库与 schema 的结构差异 SQL（只读诊断）
 #   deploy.sh restart  只重启服务
 #   deploy.sh stop     停止服务
 #   deploy.sh status   检查进程与 HTTP 可用性
@@ -134,6 +135,32 @@ do_migrate() {
 }
 
 # ------------------------------------------------------------
+# 结构诊断：输出「线上数据库 -> schema.prisma」的差异 SQL（只读，不写库）
+#
+# 用途：schema 改过但忘记生成 migration 时，线上 migrate deploy 会显示
+#       "No pending migrations to apply"，结构却仍停留在旧版本。
+#       用本命令拿到权威差异 SQL，据此补写 prisma/migrations 下的迁移文件。
+# ------------------------------------------------------------
+do_diff() {
+    cd "${APP_DIR}"
+    local db_url
+    db_url="$(sed -n 's/^DATABASE_URL=//p' .env 2>/dev/null | tr -d '"' | head -1)"
+    if [ -z "${db_url}" ]; then
+        log "错误：未能从 ${APP_DIR}/.env 读取 DATABASE_URL"
+        exit 1
+    fi
+    log "=== 线上库 -> schema.prisma 差异 SQL 开始 ==="
+    pnpm exec prisma migrate diff \
+        --from-url "${db_url}" \
+        --to-schema-datamodel prisma/schema.prisma \
+        --script || {
+            log "⚠️ prisma migrate diff 执行失败"
+            return 1
+        }
+    log "=== 线上库 -> schema.prisma 差异 SQL 结束（空=结构已一致）==="
+}
+
+# ------------------------------------------------------------
 # 启动
 # ------------------------------------------------------------
 do_start() {
@@ -199,6 +226,7 @@ do_status() {
 case "${1:-}" in
     deploy)  do_build; do_migrate; do_start; do_status ;;
     migrate) do_migrate ;;
+    diff)    do_diff ;;
     build)   do_build ;;
     restart) do_start; do_status ;;
     stop)    do_stop ;;

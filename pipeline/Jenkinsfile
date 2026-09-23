@@ -43,6 +43,7 @@ pipeline {
 
     parameters {
         booleanParam(name: 'SKIP_BUILD', defaultValue: false, description: '跳过同步与构建，仅执行数据库迁移')
+        booleanParam(name: 'RUN_DIFF', defaultValue: false, description: '输出线上库与 schema.prisma 的结构差异 SQL（只读诊断，不写库）')
         booleanParam(name: 'RESTART_APP', defaultValue: false, description: '由 Jenkins 重启服务。宝塔 PM2 托管进程时必须保持 false，否则会抢进程并脱离 PM2 管理')
     }
 
@@ -97,6 +98,18 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
                     sh """
                         ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh migrate"
+                    """
+                }
+            }
+        }
+
+        stage("Schema Diff") {
+            when { expression { params.RUN_DIFF == true } }
+            steps {
+                echo "===== 输出线上库与 schema.prisma 的结构差异 SQL（只读） ====="
+                withCredentials([sshUserPrivateKey(credentialsId: "host-ssh-key", keyFileVariable: "HOST_SSH_KEY")]) {
+                    sh """
+                        ssh -i \${HOST_SSH_KEY} -p \${HOST_SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \${HOST_USER}@\${HOST_IP} "export PATH=\${NODE_BIN_DIR}:\$PATH; bash \${HOST_APP_DIR}/deploy/deploy.sh diff"
                     """
                 }
             }
