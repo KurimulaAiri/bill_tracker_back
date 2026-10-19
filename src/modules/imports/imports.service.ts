@@ -222,19 +222,21 @@ export class ImportsService {
         success: 0,
         skipped,
         failed,
-        meta: meta && Object.keys(meta).length ? (meta as Prisma.InputJsonValue) : undefined,
+        meta: meta && Object.keys(meta).length ? (this.sanitizeJson(meta) as Prisma.InputJsonValue) : undefined,
         status: 'done',
       },
     });
 
     if (createMany.length > 0) {
       await this.prisma.bill.createMany({
-        data: createMany.map((b) => ({
-          ...b,
-          importBatchId: batch.id,
-          importGroupId,
-          batchFileName: fileName,
-        })),
+        data: this.sanitizeJson(
+          createMany.map((b) => ({
+            ...b,
+            importBatchId: batch.id,
+            importGroupId,
+            batchFileName: fileName,
+          })),
+        ),
       });
     }
     success = createMany.length;
@@ -245,7 +247,7 @@ export class ImportsService {
       ...failures.map((f) => ({ batchId: batch.id, kind: 'fail', rowNo: f.rowNo, reason: f.reason, raw: f.raw ? { data: f.raw } : undefined })),
     ];
     if (detailRows.length > 0) {
-      await this.prisma.importFailure.createMany({ data: detailRows });
+      await this.prisma.importFailure.createMany({ data: this.sanitizeJson(detailRows) });
     }
 
     return { batchId: batch.id, total: bills.length + skipList.length, success, skipped, failed };
@@ -403,6 +405,49 @@ private async ensureAccount(userId: bigint, source: string, info: string): Promi
       select: { externalId: true },
     });
     return new Set(found.map((f) => f.externalId as string));
+  }
+
+  /**
+   * 清洗外部输入中的孤立代理项（未配对的 \uD800-\uDFFF）。
+   *
+   * Prisma 的 Json 字段要求字符串是合法 UTF-16：只要有一个孤立代理项，查询引擎解析
+   * 查询 JSON 时就会报 "unexpected end of hex escape at line 1 column N"，整批导入直接 500。
+   * raw / rawData / meta 全部来自浏览器端解析结果（外部输入），这里统一把孤立代理项
+   * 替换为 U+FFFD，避免一个脏字符拖垮整批导入。
+   */
+  protected sanitizeJson<T>(value: T): T {
+    if (typeof value === 'string') {
+      let out = '';
+      for (let i = 0; i < value.length; i++) {
+        const c = value.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          const next = value.charCodeAt(i + 1);
+          if (next >= 0xdc00 && next <= 0xdfff) {
+            out += value[i] + value[i + 1];
+            i++;
+          } else {
+            out += '\ufffd';
+          }
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+          out += '\ufffd';
+        } else {
+          out += value[i];
+        }
+      }
+      return out as unknown as T;
+    }
+    if (Array.isArray(value)) {
+      return value.map((v) => this.sanitizeJson(v)) as unknown as T;
+    }
+    // Date / bigint 等保持原样；只有普通对象逐键递归
+    if (value && typeof value === 'object' && !(value instanceof Date) && !(value instanceof Uint8Array)) {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(value as Record<string, unknown>)) {
+        out[k] = this.sanitizeJson((value as Record<string, unknown>)[k]);
+      }
+      return out as unknown as T;
+    }
+    return value;
   }
 
   protected normalizeTime(t: Date | string): Date {
