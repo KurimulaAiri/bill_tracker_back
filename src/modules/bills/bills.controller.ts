@@ -22,6 +22,8 @@ export class BillsController {
       start: query.start,
       end: query.end,
       keyword: query.keyword,
+      minAmountCents: query.minAmountCents,
+      maxAmountCents: query.maxAmountCents,
       sortField: query.sortField,
       sortOrder: query.sortOrder,
     });
@@ -42,6 +44,8 @@ export class BillsController {
         start: query.start,
         end: query.end,
         keyword: query.keyword,
+        minAmountCents: query.minAmountCents,
+        maxAmountCents: query.maxAmountCents,
       },
       format,
     );

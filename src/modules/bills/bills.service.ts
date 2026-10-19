@@ -20,6 +20,8 @@ export class BillsService {
       start?: string;
       end?: string;
       keyword?: string;
+      minAmountCents?: string;
+      maxAmountCents?: string;
       sortField?: string;
       sortOrder?: 'asc' | 'desc';
     },
@@ -299,13 +301,46 @@ export class BillsService {
   /** 列表/导出通用条件构建（含关键词多字段模糊搜索与交易类型原生 SQL 匹配） */
   private async buildListWhere(
     userId: bigint,
-    query: { source?: string; categoryId?: string; accountId?: string; billType?: string; start?: string; end?: string; keyword?: string },
+    query: {
+      source?: string;
+      categoryId?: string;
+      accountId?: string;
+      billType?: string;
+      start?: string;
+      end?: string;
+      keyword?: string;
+      minAmountCents?: string;
+      maxAmountCents?: string;
+    },
   ): Promise<any> {
     const where: any = { userId };
     if (query.source) where.source = query.source;
     if (query.categoryId) where.categoryId = BigInt(query.categoryId);
     if (query.accountId) where.accountId = BigInt(query.accountId);
     if (query.billType) where.billType = query.billType;
+
+    // 金额范围：按「金额大小」筛，不看收支方向。
+    // 库里支出为负、收入为正，列表展示的是绝对值，因此 |amount| ∈ [min, max]，
+    // 等价于 amount ∈ [min, max] ∪ [-max, -min]。拆成两段 OR，避免对列做函数运算（仍可走索引）。
+    const minCents = this.parseAmountBound(query.minAmountCents);
+    const maxCents = this.parseAmountBound(query.maxAmountCents);
+    if (minCents !== null || maxCents !== null) {
+      let lo = minCents ?? 0n;
+      let hi = maxCents;
+      // 用户把上下限填反了就换过来，不报错
+      if (hi !== null && hi < lo) [lo, hi] = [hi, lo];
+      const ranges: any[] = [];
+      if (hi === null) {
+        // 只有下限：|amount| >= lo（lo 为 0 时无意义，不加条件）
+        if (lo > 0n) ranges.push({ amount: { gte: lo } }, { amount: { lte: -lo } });
+      } else if (lo === hi) {
+        ranges.push({ amount: { equals: hi } }, { amount: { equals: -hi } });
+      } else {
+        ranges.push({ amount: { gte: lo, lte: hi } }, { amount: { gte: -hi, lte: -lo } });
+      }
+      if (ranges.length) where.OR = [...(where.OR || []), ...ranges];
+    }
+
     if (query.start || query.end) {
       where.billDate = {
         ...(query.start ? { gte: new Date(query.start) } : {}),
@@ -338,6 +373,14 @@ export class BillsService {
       }
     }
     return where;
+  }
+
+  // 金额边界（单位：分）。空值/非法值返回 null；负数按绝对值处理（范围只看大小）
+  private parseAmountBound(raw?: string | number | null): bigint | null {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return BigInt(Math.round(Math.abs(n)));
   }
 
   private readonly SOURCE_LABELS: Record<string, string> = {
@@ -376,7 +419,18 @@ export class BillsService {
   /** 按条件/指定 ids 导出匹配账单（xlsx / csv），按时间升序 */
   async exportBills(
     userId: bigint,
-    query: { ids?: string[]; source?: string; categoryId?: string; accountId?: string; billType?: string; start?: string; end?: string; keyword?: string },
+    query: {
+      ids?: string[];
+      source?: string;
+      categoryId?: string;
+      accountId?: string;
+      billType?: string;
+      start?: string;
+      end?: string;
+      keyword?: string;
+      minAmountCents?: string;
+      maxAmountCents?: string;
+    },
     format: 'xlsx' | 'csv',
   ): Promise<{ filename: string; buffer: Buffer; contentType: string }> {
     const where = await this.resolveExportWhere(userId, query);
@@ -449,7 +503,18 @@ export class BillsService {
   // 导出/预览通用 where：指定 ids 优先（勾选行导出），否则按条件筛选
   private async resolveExportWhere(
     userId: bigint,
-    query: { ids?: string[]; source?: string; categoryId?: string; accountId?: string; billType?: string; start?: string; end?: string; keyword?: string },
+    query: {
+      ids?: string[];
+      source?: string;
+      categoryId?: string;
+      accountId?: string;
+      billType?: string;
+      start?: string;
+      end?: string;
+      keyword?: string;
+      minAmountCents?: string;
+      maxAmountCents?: string;
+    },
   ): Promise<any> {
     if (query.ids && query.ids.length) {
       const idList = [...new Set(query.ids.map((i) => BigInt(i)).filter((i) => !isNaN(Number(i))))];
