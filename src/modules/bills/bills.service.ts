@@ -129,7 +129,7 @@ export class BillsService {
       where: { id },
       data: {
         ...(dto.amountCents !== undefined ? { amount: BigInt(dto.amountCents) } : {}),
-        ...(dto.billType ? { billType: dto.billType } : {}),
+        ...(dto.billType ? { billType: dto.billType, neutral: dto.billType === 'neutral' } : {}),
         ...(dto.note !== undefined ? { note: dto.note } : {}),
         ...(dto.accountId !== undefined ? { accountId: dto.accountId ? BigInt(dto.accountId) : null } : {}),
         ...(dto.categoryId !== undefined ? { categoryId: dto.categoryId ? BigInt(dto.categoryId) : null } : {}),
@@ -145,6 +145,9 @@ export class BillsService {
         userId,
         amount: BigInt(dto.amountCents),
         billType: dto.billType || (dto.amountCents < 0 ? 'expense' : 'income'),
+        // neutral 字段与 billType 必须同向：统计里 baseWhere 用 neutral:false 排除中性账单，
+        // 只改 billType 不改标记会让手工/编辑出来的中性账单与导入的中性账单口径不一致
+        neutral: (dto.billType || (dto.amountCents < 0 ? 'expense' : 'income')) === 'neutral',
         note: dto.note,
         accountId: dto.accountId ? BigInt(dto.accountId) : null,
         categoryId: dto.categoryId ? BigInt(dto.categoryId) : null,
