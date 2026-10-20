@@ -14,6 +14,7 @@ const ALIPAY_CATEGORY_MAP: Record<string, string> = {
   资金互转: '资金互转',
   退款: '退款收入',
   医疗健康: '医疗健康',
+  信用借还: '资金互转',
   其他: '其他支出',
 };
 
@@ -35,6 +36,10 @@ const WECHAT_CATEGORY_MAP: Record<string, string> = {
   信用卡还款: '其他支出',
   理财通赎回: '投资理财',
   理财通购买: '投资理财',
+  购买理财通: '投资理财',
+  转入零钱通: '资金互转',
+  扫二维码付款: '其他支出',
+  微信红包: '资金互转',
 };
 
 @Injectable()
@@ -85,10 +90,15 @@ export class ImportsService {
 
     // 系统分类查询（懒加载缓存）
     const categoryCache = new Map<string, bigint>();
+    // 分类表只有 income/expense 两种 type，中性账单（不计收支）无法按 type 命中，
+    // 这里再建一份「分类名 -> 分类ID」索引供其回退查找；同名分类收入/支出各有时支出优先
+    // （中性交易多为还款、理财申赎、转账这类资金流转）
+    const categoryNameCache = new Map<string, bigint>();
     const categories = await this.prisma.category.findMany({ where: { OR: [{ userId: null }, { userId }] } });
     for (const c of categories) {
       const key = `${c.type}:${c.name}`;
       categoryCache.set(key, c.id);
+      if (!categoryNameCache.has(c.name) || c.type === 'expense') categoryNameCache.set(c.name, c.id);
     }
     // 用户自定义源分类映射：(source|sourceCategory) -> 分类（含收支类型，用于校验）
     const aliasMap = new Map<string, { id: bigint; type: string }>();
@@ -135,20 +145,14 @@ export class ImportsService {
       // 分类解析：1) 用户指定 categoryId 2) 用户自定义映射（分类管理页配置的 aliases，优先于内置表）
       let categoryId = b.categoryId;
       if (!categoryId) {
-        const aliasHit = b.sourceCategory ? aliasMap.get(`${source}|${b.sourceCategory}`) : undefined;
-        if (aliasHit && aliasHit.type === b.billType) {
-          categoryId = aliasHit.id;
-        } else {
-          const mapped = this.mapCategory(source, b.sourceCategory, b.billType);
-          const cacheKey = mapped && `${b.billType}:${mapped}`;
-          categoryId = cacheKey ? categoryCache.get(cacheKey) : undefined;
-          // 兜底：映射出的分类在该收支类型下不存在时（如微信红包/转账映射的"资金互转"仅为支出类型），
-          // 回退"其他收入/其他支出"，保证导入记录都有分类
-          if (!categoryId) {
-            const fallback = b.billType === 'income' ? '其他收入' : '其他支出';
-            categoryId = categoryCache.get(`${b.billType}:${fallback}`);
-          }
-        }
+        categoryId = this.resolveBillCategory({
+          source,
+          sourceCategory: b.sourceCategory,
+          billType: b.billType,
+          aliasMap,
+          typeCache: categoryCache,
+          nameCache: categoryNameCache,
+        });
       }
 
       // 账户归属：手动指定 accountId 则全部使用之；否则按每笔的账户信息自动创建/匹配
@@ -386,15 +390,75 @@ private async ensureAccount(userId: bigint, source: string, info: string): Promi
   }
 
   // 按来源分别映射：支付宝用交易分类，微信用交易类型；本地导出回导分类列已是系统分类名，直配
+  // 中性账单（不计收支）同样返回分类：即使这笔不计入收支统计，用户仍希望知道它属于哪一类
+  //（2026-10-20 起「不计收支」不再等于「无分类」）
   protected mapCategory(source: string, sourceCategory: string | undefined, billType: string): string | undefined {
     if (!sourceCategory) return undefined;
-    if (billType === 'neutral') return undefined;
     if (source === 'export') return sourceCategory;
     const table = source === 'wechat' ? WECHAT_CATEGORY_MAP : ALIPAY_CATEGORY_MAP;
-    const mapped = table[sourceCategory];
+    // 精确命中优先；未命中再做前缀匹配（微信的值常带后缀，如"转入零钱通-来自零钱""转入零钱通-来自建设银行(6917)"）
+    const mapped = table[sourceCategory] ?? this.matchCategoryPrefix(table, sourceCategory);
     if (mapped) return mapped === '退款收入' && billType === 'expense' ? '其他支出' : mapped;
     // 未匹配的类别归"其他"
     return billType === 'income' ? '其他收入' : '其他支出';
+  }
+
+  // 前缀最长匹配：映射表的 key 是归类前缀，源值可能带"-来自零钱""-来自建设银行(6917)"之类后缀
+  protected matchCategoryPrefix(table: Record<string, string>, value: string): string | undefined {
+    let best: string | undefined;
+    let bestLen = 0;
+    for (const key of Object.keys(table)) {
+      if (key.length > bestLen && value.startsWith(key)) {
+        best = table[key];
+        bestLen = key.length;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * 按「收支类型 + 分类名」取分类ID。
+   *
+   * 分类表 type 只有 income/expense：中性账单按名称回退查找（同名支出优先），
+   * 其余情况严格按 type 命中，避免把收入账单挂到支出分类上。
+   */
+  protected resolveCategoryId(
+    billType: string,
+    name: string,
+    typeCache: Map<string, bigint>,
+    nameCache: Map<string, bigint>,
+  ): bigint | undefined {
+    const exact = typeCache.get(`${billType}:${name}`);
+    if (exact) return exact;
+    return billType === 'neutral' ? nameCache.get(name) : undefined;
+  }
+
+  /**
+   * 解析一笔账单最终要落的分类ID（imports 导入与存量数据回填共用同一条链，避免两套逻辑漂移）：
+   *   1) 用户自定义源分类别名（分类管理页 aliases，优先于内置表）
+   *   2) 内置来源映射表（支付宝交易分类 / 微信交易类型，含前缀匹配）
+   *   3) 兜底「其他收入 / 其他支出」，保证记录都有分类
+   * 中性账单（不计收支）走同一条链，只是查表时不校验 type。
+   */
+  protected resolveBillCategory(params: {
+    source: string;
+    sourceCategory?: string;
+    billType: string;
+    aliasMap: Map<string, { id: bigint; type: string }>;
+    typeCache: Map<string, bigint>;
+    nameCache: Map<string, bigint>;
+  }): bigint | undefined {
+    const { source, sourceCategory, billType, aliasMap, typeCache, nameCache } = params;
+    const aliasHit = sourceCategory ? aliasMap.get(`${source}|${sourceCategory}`) : undefined;
+    // 中性账单没有 neutral 类型的分类可校验，命中任意类型的别名映射都采用
+    if (aliasHit && (aliasHit.type === billType || billType === 'neutral')) return aliasHit.id;
+    const mapped = this.mapCategory(source, sourceCategory, billType);
+    const hit = mapped ? this.resolveCategoryId(billType, mapped, typeCache, nameCache) : undefined;
+    if (hit) return hit;
+    // 兜底：映射出的分类在该收支类型下不存在时（如微信红包/转账映射的"资金互转"仅为支出类型），
+    // 回退"其他收入/其他支出"，保证导入记录都有分类
+    const fallback = billType === 'income' ? '其他收入' : '其他支出';
+    return this.resolveCategoryId(billType, fallback, typeCache, nameCache);
   }
 
   protected async getExistingExternalIds(userId: bigint, source: string, externalIds: (string | undefined)[]): Promise<Set<string>> {
